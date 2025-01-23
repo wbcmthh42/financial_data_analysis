@@ -10,13 +10,15 @@ import os
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
-from langchain.document_loaders import PDFPlumberLoader
 from langchain.schema import Document
 import chromadb
 import numpy as np
+import PyPDF2
 
 import camelot
 from typing import List, Dict
+from openai import AzureOpenAI
+from dotenv import load_dotenv
 
 # Set up the Streamlit page
 st.set_page_config(page_title="AI Learning Resources Assistant", layout="wide")
@@ -49,7 +51,6 @@ def process_pdf(file_path: str) -> List[Document]:
     for idx, table in enumerate(tables):
         df = table.df
         table_str = f"Table {idx + 1}:\n{df.to_string()}"
-        # Convert dict to Document
         chunks.append(Document(
             page_content=table_str,
             metadata={
@@ -60,25 +61,38 @@ def process_pdf(file_path: str) -> List[Document]:
             }
         ))
     
-    # Extract text using PDFPlumber (if needed)
-    loader = PDFPlumberLoader(file_path)
-    text_pages = loader.load()
-    
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=200,
-        chunk_overlap=100,
-        separators=["\n\n", "\n", " ", ""]
-    )
-    
-    text_chunks = text_splitter.split_documents(text_pages)
-    for chunk in text_chunks:
-        chunk.metadata["content_type"] = "text"
-        chunks.append(chunk)
+    # Extract text using PyPDF2
+    with open(file_path, 'rb') as file:
+        pdf_reader = PyPDF2.PdfReader(file)
+        
+        # Process each page
+        for page_num in range(len(pdf_reader.pages)):
+            page = pdf_reader.pages[page_num]
+            text = page.extract_text()
+            
+            # Split text into chunks
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=200,
+                chunk_overlap=100,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            
+            # Create Document objects for each text chunk
+            text_chunks = text_splitter.create_documents(
+                texts=[text],
+                metadatas=[{
+                    "source": file_path,
+                    "page": page_num + 1,
+                    "content_type": "text"
+                }]
+            )
+            
+            chunks.extend(text_chunks)
     
     return chunks
 
-@st.cache_resource(ttl="1h")  # Cache with 1 hour time-to-live
-def initialize_vector_store(openai_api_key):
+@st.cache_resource(ttl="1h")
+def initialize_vector_store():
     """Initialize and return the vector store"""
     persist_dir = "./chroma_db"
     
@@ -95,7 +109,9 @@ def initialize_vector_store(openai_api_key):
             anonymized_telemetry=False
         )
         
-        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key, model="text-embedding-3-large")
+        embeddings = OpenAIEmbeddings(
+            model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
+        )
         
         vector_store = Chroma(
             collection_name="financial_docs",
@@ -187,7 +203,7 @@ def query_llm(client, prompt, vector_store):
     messages.append({"role": "user", "content": prompt})
 
     response = client.chat.completions.create(
-        model="gpt-4o",  # Updated to a current model
+        model=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"),
         messages=messages,
         temperature=0
     )
@@ -246,17 +262,19 @@ def main():
     if 'charts' not in st.session_state:
         st.session_state.charts = []
     
-    # Get API key
-    openai_api_key = st.sidebar.text_input("Enter your OpenAI API key", type="password")
-    if not openai_api_key:
-        st.info("Please enter your OpenAI API key to continue.")
-        return
+    # Load environment variables
+    load_dotenv()
     
-    client = OpenAI(api_key=openai_api_key)
+    # Initialize Azure OpenAI client
+    client = AzureOpenAI(
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+    )
     
     # Initialize vector store with better error handling
     try:
-        vector_store = initialize_vector_store(openai_api_key)
+        vector_store = initialize_vector_store()
         if vector_store is None:
             st.error("Vector store initialization failed. Please check your settings and try again.")
             return
