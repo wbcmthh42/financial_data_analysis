@@ -7,7 +7,7 @@ from openai import OpenAI
 import json
 import re
 import os
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.schema import Document
@@ -19,6 +19,7 @@ import camelot
 from typing import List, Dict
 from openai import AzureOpenAI
 from dotenv import load_dotenv
+from docling.document_converter import DocumentConverter
 
 # Set up the Streamlit page
 st.set_page_config(page_title="AI Learning Resources Assistant", layout="wide")
@@ -26,6 +27,31 @@ st.set_page_config(page_title="AI Learning Resources Assistant", layout="wide")
 # Initialize session state for chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+def process_pdf(file_path):
+    """Process a single PDF file and return chunks"""
+    converter = DocumentConverter()
+    markdown_document = converter.convert(file_path)
+
+    headers_to_split_on = [
+        ("#", "Header 1"),
+        ("##", "Header 2"),
+        ("###", "Header 3"),
+    ]
+
+    splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+    raw_chunks = splitter.split_text(markdown_document.document.export_to_markdown())
+    
+    # Add metadata to each chunk
+    chunks = []
+    for chunk in raw_chunks:
+        chunk.metadata.update({
+            "source": file_path,
+            "content_type": "text"
+        })
+        chunks.append(chunk)
+
+    return chunks
 
 # def process_pdf(file_path):
 #     """Process a single PDF file and return chunks"""
@@ -42,54 +68,54 @@ if "messages" not in st.session_state:
 #     chunks = text_splitter.split_documents(pages)
 #     return chunks
 
-def process_pdf(file_path: str) -> List[Document]:
-    """Process a single PDF file and extract both tables and text"""
-    chunks = []
+# def process_pdf(file_path: str) -> List[Document]:
+#     """Process a single PDF file and extract both tables and text"""
+#     chunks = []
     
-    # Extract tables using Camelot
-    tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
-    for idx, table in enumerate(tables):
-        df = table.df
-        table_str = f"Table {idx + 1}:\n{df.to_string()}"
-        chunks.append(Document(
-            page_content=table_str,
-            metadata={
-                "source": file_path,
-                "page": table.parsing_report['page'],
-                "content_type": "table",
-                "table_number": idx + 1
-            }
-        ))
+#     # Extract tables using Camelot
+#     tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
+#     for idx, table in enumerate(tables):
+#         df = table.df
+#         table_str = f"Table {idx + 1}:\n{df.to_string()}"
+#         chunks.append(Document(
+#             page_content=table_str,
+#             metadata={
+#                 "source": file_path,
+#                 "page": table.parsing_report['page'],
+#                 "content_type": "table",
+#                 "table_number": idx + 1
+#             }
+#         ))
     
-    # Extract text using PyPDF2
-    with open(file_path, 'rb') as file:
-        pdf_reader = PyPDF2.PdfReader(file)
+#     # Extract text using PyPDF2
+#     with open(file_path, 'rb') as file:
+#         pdf_reader = PyPDF2.PdfReader(file)
         
-        # Process each page
-        for page_num in range(len(pdf_reader.pages)):
-            page = pdf_reader.pages[page_num]
-            text = page.extract_text()
+#         # Process each page
+#         for page_num in range(len(pdf_reader.pages)):
+#             page = pdf_reader.pages[page_num]
+#             text = page.extract_text()
             
-            # Split text into chunks
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=200,
-                chunk_overlap=100,
-                separators=["\n\n", "\n", " ", ""]
-            )
+#             # Split text into chunks
+#             text_splitter = RecursiveCharacterTextSplitter(
+#                 chunk_size=200,
+#                 chunk_overlap=100,
+#                 separators=["\n\n", "\n", " ", ""]
+#             )
             
-            # Create Document objects for each text chunk
-            text_chunks = text_splitter.create_documents(
-                texts=[text],
-                metadatas=[{
-                    "source": file_path,
-                    "page": page_num + 1,
-                    "content_type": "text"
-                }]
-            )
+#             # Create Document objects for each text chunk
+#             text_chunks = text_splitter.create_documents(
+#                 texts=[text],
+#                 metadatas=[{
+#                     "source": file_path,
+#                     "page": page_num + 1,
+#                     "content_type": "text"
+#                 }]
+#             )
             
-            chunks.extend(text_chunks)
+#             chunks.extend(text_chunks)
     
-    return chunks
+#     return chunks
 
 @st.cache_resource(ttl="1h")
 def initialize_vector_store():
@@ -157,6 +183,7 @@ def query_llm(client, prompt, vector_store):
     # Perform similarity search
     relevant_docs = vector_store.similarity_search(prompt, k=3)
     
+    # Extract page_content from Document objects
     context = "\n".join([doc.page_content for doc in relevant_docs])
     
     messages = [
