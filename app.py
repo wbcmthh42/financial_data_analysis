@@ -180,8 +180,35 @@ def load_documents():
     return all_chunks
 
 def query_llm(client, prompt, vector_store):
-    # Perform similarity search
-    relevant_docs = vector_store.similarity_search(prompt, k=3)
+
+    def expand_query_with_llm(query):
+        """Use LLM to generate query expansion terms."""
+        expansion_prompt = f"""
+        Expand the following financial query by providing synonyms, related concepts, and alternative phrasings. 
+        Ensure the terms remain relevant to financial data analysis:
+        
+        Query: "{query}"
+        
+        Provide the expansion terms as a comma-separated list.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",  # Use GPT-4 or a suitable model
+            messages=[{"role": "user", "content": expansion_prompt}],
+            max_tokens=50,
+            temperature=0  # Lower temp for more deterministic outputs
+        )
+        
+        # Extract expansion terms
+        expansion_terms = response.choices[0].message.content.strip().split(", ")
+        
+        # Combine with the original query
+        expanded_query = query + " " + " ".join(expansion_terms)
+        
+        return expanded_query
+
+    # Perform similarity search    
+    relevant_docs = vector_store.similarity_search(expand_query_with_llm(prompt), k=8)
     
     # Extract page_content from Document objects
     context = "\n".join([doc.page_content for doc in relevant_docs])
@@ -190,7 +217,7 @@ def query_llm(client, prompt, vector_store):
         {"role": "system", "content": f"""
         You are a financial data analyst assistant that helps analyze financial data from PDFs.
         
-        Use this context from the documents to answer the question:
+        Use this context from the documents to answer the question {expand_query_with_llm(prompt)}:
         {context}
         
         When analyzing the data:
